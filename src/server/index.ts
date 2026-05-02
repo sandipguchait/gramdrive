@@ -163,8 +163,8 @@ function decodeCookiePayload<T>(value: string) {
   return JSON.parse(decryptText(value, config.appSecret)) as T;
 }
 
-function setLoginCookie(res: Response, user: UserAccount) {
-  const payload: StatelessSessionPayload = {
+function createSessionPayload(user: UserAccount): StatelessSessionPayload {
+  return {
     version: 1,
     user: {
       id: user.id,
@@ -181,13 +181,23 @@ function setLoginCookie(res: Response, user: UserAccount) {
     createdAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + sessionDurationMs).toISOString()
   };
+}
+
+function createSessionToken(user: UserAccount) {
+  return encodeCookiePayload(createSessionPayload(user));
+}
+
+function setLoginCookie(res: Response, user: UserAccount) {
+  const token = createSessionToken(user);
 
   setChunkedCookie(
     res,
     sessionCookie,
-    encodeCookiePayload(payload),
+    token,
     Math.floor(sessionDurationMs / 1000)
   );
+
+  return token;
 }
 
 function setLoginAttemptCookie(res: Response, attempt: LoginAttempt) {
@@ -318,7 +328,12 @@ function sortFiles(files: DriveFileRecord[], sort: string, direction: string) {
 
 async function getRequestSession(req: Request) {
   const cookies = parseCookies(req);
-  const token = readChunkedCookie(cookies, sessionCookie);
+  const authorization = req.headers.authorization;
+  const bearerToken =
+    typeof authorization === "string" && authorization.toLowerCase().startsWith("bearer ")
+      ? authorization.slice(7).trim()
+      : undefined;
+  const token = bearerToken || readChunkedCookie(cookies, sessionCookie);
 
   if (!token) {
     return null;
@@ -643,8 +658,8 @@ app.post("/api/auth/verify-code", async (req, res) => {
     });
 
     clearLoginAttemptCookie(res);
-    setLoginCookie(res, signedIn.account);
-    res.json({ user: signedIn.user });
+    const authToken = setLoginCookie(res, signedIn.account);
+    res.json({ user: signedIn.user, authToken });
   } catch (error) {
     jsonError(res, 400, toTelegramError(error));
   }
@@ -678,8 +693,8 @@ app.post("/api/auth/verify-password", async (req, res) => {
     });
 
     clearLoginAttemptCookie(res);
-    setLoginCookie(res, signedIn.account);
-    res.json({ user: signedIn.user });
+    const authToken = setLoginCookie(res, signedIn.account);
+    res.json({ user: signedIn.user, authToken });
   } catch (error) {
     jsonError(res, 400, toTelegramError(error));
   }

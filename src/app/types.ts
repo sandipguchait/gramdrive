@@ -5,6 +5,11 @@ export type PublicUser = {
   initials: string;
 };
 
+export type AuthenticatedUserResponse = {
+  user: PublicUser;
+  authToken?: string;
+};
+
 export type AppConfig = {
   telegramConfigured: boolean;
   serverCredentialsAvailable: boolean;
@@ -74,8 +79,8 @@ export type VerifyCodeResponse =
   | {
       requiresPassword: true;
       user?: never;
+      authToken?: never;
     }
-  | {
+  | (AuthenticatedUserResponse & {
       requiresPassword?: false;
-      user: PublicUser;
-    };
+    });

@@ -1,5 +1,6 @@
 import type {
   ActivityRecord,
+  AuthenticatedUserResponse,
   AppConfig,
   DriveFileRecord,
   FileQuery,
@@ -10,11 +11,43 @@ import type {
   VerifyCodeResponse
 } from "./types";
 
+const authTokenKey = "gramdrive.authToken";
+
+function getStoredAuthToken() {
+  try {
+    return window.localStorage.getItem(authTokenKey);
+  } catch {
+    return null;
+  }
+}
+
+function saveAuthToken(token?: string) {
+  if (!token) return;
+
+  try {
+    window.localStorage.setItem(authTokenKey, token);
+  } catch {
+    // Cookies remain the fallback when storage is unavailable.
+  }
+}
+
+export function clearAuthToken() {
+  try {
+    window.localStorage.removeItem(authTokenKey);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   const payload = text ? JSON.parse(text) : {};
 
   if (!response.ok) {
+    if (response.status === 401) {
+      clearAuthToken();
+    }
+
     throw new Error(payload.error ?? "Something went wrong.");
   }
 
@@ -22,10 +55,12 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 export async function api<T>(path: string, init?: RequestInit) {
+  const token = getStoredAuthToken();
   const response = await fetch(path, {
     ...init,
     headers: {
       ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers
     }
   });
@@ -41,20 +76,36 @@ export const DriveApi = {
       method: "POST",
       body: JSON.stringify({ phone, apiId, apiHash })
     }),
-  verifyCode: (loginId: string, code: string) =>
-    api<VerifyCodeResponse>("/api/auth/verify-code", {
+  verifyCode: async (loginId: string, code: string) => {
+    const result = await api<VerifyCodeResponse>("/api/auth/verify-code", {
       method: "POST",
       body: JSON.stringify({ loginId, code })
-    }),
-  verifyPassword: (loginId: string, password: string) =>
-    api<{ user: PublicUser }>("/api/auth/verify-password", {
+    });
+
+    if (!result.requiresPassword) {
+      saveAuthToken(result.authToken);
+    }
+
+    return result;
+  },
+  verifyPassword: async (loginId: string, password: string) => {
+    const result = await api<AuthenticatedUserResponse>("/api/auth/verify-password", {
       method: "POST",
       body: JSON.stringify({ loginId, password })
-    }),
-  logout: () =>
-    api<{ ok: true }>("/api/auth/logout", {
-      method: "POST"
-    }),
+    });
+
+    saveAuthToken(result.authToken);
+    return result;
+  },
+  logout: async () => {
+    try {
+      return await api<{ ok: true }>("/api/auth/logout", {
+        method: "POST"
+      });
+    } finally {
+      clearAuthToken();
+    }
+  },
   folders: () => api<{ folders: FolderRecord[] }>("/api/folders"),
   createFolder: (name: string) =>
     api<{ folder: FolderRecord }>("/api/folders", {
@@ -116,7 +167,12 @@ export function uploadDriveFile(
 
   return new Promise<DriveFileRecord>((resolve, reject) => {
     const request = new XMLHttpRequest();
+    const token = getStoredAuthToken();
     request.open("POST", "/api/files/upload");
+
+    if (token) {
+      request.setRequestHeader("Authorization", `Bearer ${token}`);
+    }
 
     request.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable) {
