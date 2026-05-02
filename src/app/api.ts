@@ -12,6 +12,7 @@ import type {
 } from "./types";
 
 const authTokenKey = "gramdrive.authToken";
+const clientBuild = "auth-v3-20260502";
 
 function getStoredAuthToken() {
   try {
@@ -58,8 +59,10 @@ export async function api<T>(path: string, init?: RequestInit) {
   const token = getStoredAuthToken();
   const response = await fetch(path, {
     ...init,
+    credentials: init?.credentials ?? "same-origin",
     headers: {
       ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      "X-GramDrive-Client": clientBuild,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init?.headers
     }
@@ -169,6 +172,7 @@ export function uploadDriveFile(
     const request = new XMLHttpRequest();
     const token = getStoredAuthToken();
     request.open("POST", "/api/files/upload");
+    request.setRequestHeader("X-GramDrive-Client", clientBuild);
 
     if (token) {
       request.setRequestHeader("Authorization", `Bearer ${token}`);

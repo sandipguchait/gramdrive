@@ -11,6 +11,7 @@ export type AuthenticatedUserResponse = {
 };
 
 export type AppConfig = {
+  build?: string;
   telegramConfigured: boolean;
   serverCredentialsAvailable: boolean;
   userCredentialsEnabled: boolean;

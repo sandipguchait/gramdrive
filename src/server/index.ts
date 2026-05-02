@@ -36,6 +36,7 @@ const loginDurationMs = 10 * 60 * 1000;
 const rootFolderId = "root";
 const telegramImportCooldownMs = 5 * 60 * 1000;
 const lastTelegramImportByUser = new Map<string, number>();
+const appBuild = "auth-v3-20260502";
 
 type StatelessSessionPayload = {
   version: 1;
@@ -326,19 +327,7 @@ function sortFiles(files: DriveFileRecord[], sort: string, direction: string) {
   });
 }
 
-async function getRequestSession(req: Request) {
-  const cookies = parseCookies(req);
-  const authorization = req.headers.authorization;
-  const bearerToken =
-    typeof authorization === "string" && authorization.toLowerCase().startsWith("bearer ")
-      ? authorization.slice(7).trim()
-      : undefined;
-  const token = bearerToken || readChunkedCookie(cookies, sessionCookie);
-
-  if (!token) {
-    return null;
-  }
-
+function sessionFromStatelessToken(token: string) {
   try {
     const payload = decodeCookiePayload<StatelessSessionPayload>(token);
 
@@ -367,7 +356,29 @@ async function getRequestSession(req: Request) {
       return { token, user };
     }
   } catch {
-    // Older deployments used opaque store-backed session tokens. Fall through to that lookup.
+    return null;
+  }
+
+  return null;
+}
+
+async function getRequestSession(req: Request) {
+  const cookies = parseCookies(req);
+  const authorization = req.headers.authorization;
+  const bearerToken =
+    typeof authorization === "string" && authorization.toLowerCase().startsWith("bearer ")
+      ? authorization.slice(7).trim()
+      : undefined;
+  const cookieToken = readChunkedCookie(cookies, sessionCookie);
+  const tokens = [bearerToken, cookieToken].filter(
+    (token, index, allTokens): token is string => Boolean(token) && allTokens.indexOf(token) === index
+  );
+
+  for (const token of tokens) {
+    const session = sessionFromStatelessToken(token);
+    if (session) {
+      return session;
+    }
   }
 
   const opaqueToken = cookies.get(sessionCookie);
@@ -545,6 +556,7 @@ async function persistSignedInUser(
 
 app.get("/api/config", (_req, res) => {
   res.json({
+    build: appBuild,
     telegramConfigured: hasTelegramConfig(),
     serverCredentialsAvailable: hasTelegramConfig(),
     userCredentialsEnabled: true,
