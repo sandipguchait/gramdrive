@@ -37,7 +37,7 @@ const loginDurationMs = 10 * 60 * 1000;
 const rootFolderId = "root";
 const telegramImportCooldownMs = 5 * 60 * 1000;
 const lastTelegramImportByUser = new Map<string, number>();
-const appBuild = "auth-v3-20260502";
+const appBuild = "channels-v1-20260502";
 
 type StatelessSessionPayload = {
   version: 1;

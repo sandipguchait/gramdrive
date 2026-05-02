@@ -13,7 +13,7 @@ import type {
 } from "./types";
 
 const authTokenKey = "gramdrive.authToken";
-const clientBuild = "auth-v3-20260502";
+const clientBuild = "channels-v1-20260502";
 
 function getStoredAuthToken() {
   try {
