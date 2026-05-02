@@ -41,6 +41,14 @@ export type FolderRecord = {
   updatedAt?: string;
 };
 
+export type TelegramChannelRecord = {
+  id: string;
+  title: string;
+  username?: string;
+  participantsCount?: number;
+  isPrivate: boolean;
+};
+
 export type DriveFileRecord = {
   id: string;
   userId: string;

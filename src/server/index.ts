@@ -8,6 +8,7 @@ import { decryptText, encryptText } from "./crypto.js";
 import { mutateStore, readStore } from "./store.js";
 import {
   findGramDriveFiles,
+  listCreatedChannels,
   requestLoginCode,
   signInWithCode,
   signInWithPassword,
@@ -739,6 +740,18 @@ app.get("/api/folders", async (req, res) => {
     });
 
   res.json({ folders });
+});
+
+app.get("/api/telegram/channels", async (req, res) => {
+  const session = await requireUser(req, res);
+  if (!session) return;
+
+  try {
+    const channels = await listCreatedChannels(session.user);
+    res.json({ channels });
+  } catch (error) {
+    jsonError(res, 400, toTelegramError(error));
+  }
 });
 
 app.post("/api/folders", async (req, res) => {

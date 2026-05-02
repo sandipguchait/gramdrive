@@ -3,7 +3,12 @@ import { computeCheck } from "telegram/Password.js";
 import { StringSession } from "telegram/sessions/index.js";
 import { decryptText } from "./crypto.js";
 import { config, requireTelegramConfig } from "./config.js";
-import type { TelegramCredentials, TelegramProfile, UserAccount } from "./types.js";
+import type {
+  TelegramChannelRecord,
+  TelegramCredentials,
+  TelegramProfile,
+  UserAccount
+} from "./types.js";
 
 type LoginSuccess = {
   status: "signed_in";
@@ -301,5 +306,36 @@ export async function findGramDriveFiles(user: UserAccount, limit = 500) {
     }
 
     return files;
+  });
+}
+
+export async function listCreatedChannels(user: UserAccount, limit = 500) {
+  return withUserClient(user, async (client) => {
+    const channels: TelegramChannelRecord[] = [];
+    const seen = new Set<string>();
+
+    for await (const dialog of client.iterDialogs({ limit })) {
+      const entity = dialog.entity;
+
+      if (!(entity instanceof Api.Channel) || !entity.broadcast || !entity.creator) {
+        continue;
+      }
+
+      const id = entity.id.toString();
+      if (seen.has(id)) {
+        continue;
+      }
+
+      seen.add(id);
+      channels.push({
+        id,
+        title: entity.title,
+        username: entity.username,
+        participantsCount: entity.participantsCount,
+        isPrivate: !entity.username
+      });
+    }
+
+    return channels.sort((left, right) => left.title.localeCompare(right.title));
   });
 }

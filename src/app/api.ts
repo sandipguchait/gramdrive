@@ -8,6 +8,7 @@ import type {
   LoginCodeResponse,
   PublicUser,
   StorageSummary,
+  TelegramChannelRecord,
   VerifyCodeResponse
 } from "./types";
 
@@ -110,6 +111,7 @@ export const DriveApi = {
     }
   },
   folders: () => api<{ folders: FolderRecord[] }>("/api/folders"),
+  createdChannels: () => api<{ channels: TelegramChannelRecord[] }>("/api/telegram/channels"),
   createFolder: (name: string) =>
     api<{ folder: FolderRecord }>("/api/folders", {
       method: "POST",

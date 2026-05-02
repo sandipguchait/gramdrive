@@ -29,6 +29,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  RadioTower,
   RotateCcw,
   Search,
   ShieldCheck,
@@ -54,7 +55,8 @@ import type {
   FileSortKey,
   FolderRecord,
   PublicUser,
-  StorageSummary
+  StorageSummary,
+  TelegramChannelRecord
 } from "./types";
 
 const rootFolderId = "root";
@@ -917,9 +919,21 @@ function folderName(folders: FolderRecord[], folderId: string) {
   return folders.find((folder) => folder.id === folderId)?.name ?? "Saved Messages";
 }
 
+function formatCompactNumber(value?: number) {
+  if (!value) return "";
+
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: 1
+  }).format(value);
+}
+
 function Sidebar({
   user,
   folders,
+  channels,
+  channelsLoading,
+  channelsError,
   activeView,
   activeFolderId,
   storageSummary,
@@ -934,6 +948,9 @@ function Sidebar({
 }: {
   user: PublicUser;
   folders: FolderRecord[];
+  channels: TelegramChannelRecord[];
+  channelsLoading: boolean;
+  channelsError: string;
   activeView: DriveViewKey;
   activeFolderId: string;
   storageSummary: StorageSummary;
@@ -1024,6 +1041,56 @@ function Sidebar({
             )}
           </button>
         ))}
+      </nav>
+
+      <nav className="channel-nav" aria-label="Created Telegram channels">
+        <div className="nav-title">
+          <span>Telegram Channels</span>
+          {channelsLoading && <Loader2 className="spin" size={14} />}
+        </div>
+
+        {channelsError ? (
+          <div className="channel-empty">{channelsError}</div>
+        ) : channelsLoading && !channels.length ? (
+          <div className="channel-empty">Fetching channels...</div>
+        ) : channels.length ? (
+          channels.map((channel) => {
+            const meta = channel.username
+              ? `@${channel.username}`
+              : channel.isPrivate
+                ? "Private channel"
+                : "Channel";
+            const participants = formatCompactNumber(channel.participantsCount);
+            const content = (
+              <>
+                <RadioTower size={17} />
+                <span>
+                  <strong title={channel.title}>{channel.title}</strong>
+                  <em title={meta}>{meta}</em>
+                </span>
+                {participants && <small>{participants}</small>}
+              </>
+            );
+
+            return channel.username ? (
+              <a
+                className="channel-link"
+                href={`https://t.me/${channel.username}`}
+                key={channel.id}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {content}
+              </a>
+            ) : (
+              <div className="channel-link private" key={channel.id}>
+                {content}
+              </div>
+            );
+          })
+        ) : (
+          <div className="channel-empty">No created channels found.</div>
+        )}
       </nav>
 
       <nav className="folder-nav" aria-label="Folders">
@@ -1606,6 +1673,7 @@ function DriveView({
   onLogout: () => void;
 }) {
   const [folders, setFolders] = useState<FolderRecord[]>([]);
+  const [channels, setChannels] = useState<TelegramChannelRecord[]>([]);
   const [files, setFiles] = useState<DriveFileRecord[]>([]);
   const [activeView, setActiveView] = useState<DriveViewKey>("home");
   const [activeFolderId, setActiveFolderId] = useState(rootFolderId);
@@ -1622,6 +1690,8 @@ function DriveView({
   const [galleryQueue, setGalleryQueue] = useState<GalleryQueueItem[]>([]);
   const [galleryStatus, setGalleryStatus] = useState("");
   const [gallerySyncing, setGallerySyncing] = useState(false);
+  const [channelsLoading, setChannelsLoading] = useState(false);
+  const [channelsError, setChannelsError] = useState("");
   const [selectedFileId, setSelectedFileId] = useState("");
   const [previewFile, setPreviewFile] = useState<PreviewFile>(null);
   const [renameTarget, setRenameTarget] = useState<RenameTarget>(null);
@@ -1669,6 +1739,20 @@ function DriveView({
     setFolders(response.folders);
   }
 
+  async function refreshChannels() {
+    setChannelsLoading(true);
+    setChannelsError("");
+
+    try {
+      const response = await DriveApi.createdChannels();
+      setChannels(response.channels);
+    } catch (nextError) {
+      setChannelsError(nextError instanceof Error ? nextError.message : "Unable to fetch channels.");
+    } finally {
+      setChannelsLoading(false);
+    }
+  }
+
   async function refreshStorageSummary() {
     setStorageSummary(await DriveApi.storageSummary());
   }
@@ -1713,6 +1797,7 @@ function DriveView({
     refreshStorageSummary().catch((nextError) => {
       setError(nextError instanceof Error ? nextError.message : "Unable to load storage summary.");
     });
+    refreshChannels().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -2082,6 +2167,9 @@ function DriveView({
       <Sidebar
         user={user}
         folders={folders}
+        channels={channels}
+        channelsLoading={channelsLoading}
+        channelsError={channelsError}
         activeView={activeView}
         activeFolderId={activeFolderId}
         storageSummary={storageSummary}
