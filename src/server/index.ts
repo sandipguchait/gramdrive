@@ -7,6 +7,7 @@ import { config, hasTelegramConfig } from "./config.js";
 import { decryptText, encryptText } from "./crypto.js";
 import { mutateStore, readStore } from "./store.js";
 import {
+  findGramDriveFiles,
   requestLoginCode,
   signInWithCode,
   signInWithPassword,
@@ -17,6 +18,7 @@ import type {
   ActivityRecord,
   DriveFileRecord,
   FolderRecord,
+  LoginAttempt,
   PublicUser,
   StoreShape,
   TelegramCredentials,
@@ -25,10 +27,25 @@ import type {
 
 export const app = express();
 const sessionCookie = "tdrive_session";
+const loginAttemptCookie = "tdrive_login_attempt";
 const oneDayMs = 24 * 60 * 60 * 1000;
 const sessionDurationMs = 30 * oneDayMs;
 const loginDurationMs = 10 * 60 * 1000;
 const rootFolderId = "root";
+const telegramImportCooldownMs = 5 * 60 * 1000;
+const lastTelegramImportByUser = new Map<string, number>();
+
+type StatelessSessionPayload = {
+  version: 1;
+  user: PublicUser & {
+    telegramUserId: string;
+  };
+  apiId?: number;
+  apiHash?: string;
+  session: string;
+  createdAt: string;
+  expiresAt: string;
+};
 
 await fs.mkdir(path.join(config.dataDir, "tmp"), { recursive: true });
 
@@ -63,21 +80,86 @@ function parseCookies(req: Request) {
   return cookies;
 }
 
-function setLoginCookie(res: Response, token: string) {
+function appendSetCookie(res: Response, cookie: string) {
+  const current = res.getHeader("Set-Cookie");
+
+  if (!current) {
+    res.setHeader("Set-Cookie", cookie);
+  } else if (Array.isArray(current)) {
+    res.setHeader("Set-Cookie", [...current, cookie]);
+  } else {
+    res.setHeader("Set-Cookie", [String(current), cookie]);
+  }
+}
+
+function cookieString(name: string, value: string, maxAgeSeconds: number) {
   const secure = config.isProduction ? "; Secure" : "";
-  res.setHeader(
-    "Set-Cookie",
-    `${sessionCookie}=${encodeURIComponent(
-      token
-    )}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(sessionDurationMs / 1000)}${secure}`
+
+  return `${name}=${encodeURIComponent(
+    value
+  )}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure}`;
+}
+
+function clearCookieString(name: string) {
+  const secure = config.isProduction ? "; Secure" : "";
+
+  return `${name}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secure}`;
+}
+
+function encodeCookiePayload(value: unknown) {
+  return encryptText(JSON.stringify(value), config.appSecret);
+}
+
+function decodeCookiePayload<T>(value: string) {
+  return JSON.parse(decryptText(value, config.appSecret)) as T;
+}
+
+function setLoginCookie(res: Response, user: UserAccount) {
+  const payload: StatelessSessionPayload = {
+    version: 1,
+    user: {
+      id: user.id,
+      phone: user.phone,
+      displayName: user.displayName,
+      initials: user.initials,
+      telegramUserId: user.telegramUserId
+    },
+    apiId: user.apiId,
+    apiHash: user.encryptedApiHash
+      ? decryptText(user.encryptedApiHash, config.appSecret)
+      : undefined,
+    session: decryptText(user.encryptedSession, config.appSecret),
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + sessionDurationMs).toISOString()
+  };
+
+  appendSetCookie(
+    res,
+    cookieString(
+      sessionCookie,
+      encodeCookiePayload(payload),
+      Math.floor(sessionDurationMs / 1000)
+    )
+  );
+}
+
+function setLoginAttemptCookie(res: Response, attempt: LoginAttempt) {
+  appendSetCookie(
+    res,
+    cookieString(
+      loginAttemptCookie,
+      encodeCookiePayload(attempt),
+      Math.floor(loginDurationMs / 1000)
+    )
   );
 }
 
 function clearLoginCookie(res: Response) {
-  res.setHeader(
-    "Set-Cookie",
-    `${sessionCookie}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`
-  );
+  appendSetCookie(res, clearCookieString(sessionCookie));
+}
+
+function clearLoginAttemptCookie(res: Response) {
+  appendSetCookie(res, clearCookieString(loginAttemptCookie));
 }
 
 function publicUser(user: UserAccount): PublicUser {
@@ -196,6 +278,37 @@ async function getRequestSession(req: Request) {
     return null;
   }
 
+  try {
+    const payload = decodeCookiePayload<StatelessSessionPayload>(token);
+
+    if (
+      payload.version === 1 &&
+      payload.session &&
+      payload.user?.id &&
+      new Date(payload.expiresAt).getTime() > Date.now()
+    ) {
+      const now = new Date().toISOString();
+      const user: UserAccount = {
+        id: payload.user.id,
+        phone: payload.user.phone,
+        displayName: payload.user.displayName,
+        initials: payload.user.initials,
+        telegramUserId: payload.user.telegramUserId,
+        apiId: payload.apiId,
+        encryptedApiHash: payload.apiHash
+          ? encryptText(payload.apiHash, config.appSecret)
+          : undefined,
+        encryptedSession: encryptText(payload.session, config.appSecret),
+        createdAt: payload.createdAt,
+        updatedAt: now
+      };
+
+      return { token, user };
+    }
+  } catch {
+    // Older deployments used opaque store-backed session tokens. Fall through to that lookup.
+  }
+
   const store = await readStore();
   const webSession = store.webSessions[token];
 
@@ -219,7 +332,34 @@ async function requireUser(req: Request, res: Response) {
     return null;
   }
 
+  await ensureUserScaffold(session.user);
   return session;
+}
+
+async function getLoginAttempt(req: Request, loginId: string) {
+  const store = await readStore();
+  const storeAttempt = store.loginAttempts[loginId];
+
+  if (storeAttempt) {
+    return storeAttempt;
+  }
+
+  const cookieValue = parseCookies(req).get(loginAttemptCookie);
+  if (!cookieValue) {
+    return null;
+  }
+
+  try {
+    const attempt = decodeCookiePayload<LoginAttempt>(cookieValue);
+
+    if (attempt.id === loginId && new Date(attempt.expiresAt).getTime() > Date.now()) {
+      return attempt;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function createDefaultFolders(userId: string): FolderRecord[] {
@@ -231,6 +371,63 @@ function createDefaultFolders(userId: string): FolderRecord[] {
       createdAt: new Date().toISOString()
     }
   ];
+}
+
+async function ensureUserScaffold(user: UserAccount) {
+  await mutateStore((store) => {
+    store.users[user.id] ??= user;
+
+    for (const folder of createDefaultFolders(user.id)) {
+      store.folders[`${user.id}:${folder.id}`] ??= folder;
+    }
+  });
+}
+
+async function importGramDriveFilesFromTelegram(user: UserAccount) {
+  const lastImportAt = lastTelegramImportByUser.get(user.id) ?? 0;
+
+  if (Date.now() - lastImportAt < telegramImportCooldownMs) {
+    return;
+  }
+
+  lastTelegramImportByUser.set(user.id, Date.now());
+
+  const importedFiles = await findGramDriveFiles(user);
+  if (!importedFiles.length) {
+    return;
+  }
+
+  await mutateStore((nextStore) => {
+    for (const importedFile of importedFiles) {
+      if (nextStore.files[importedFile.id]) {
+        continue;
+      }
+
+      const folderKey = `${user.id}:${importedFile.folderId}`;
+      const folderId = nextStore.folders[folderKey] ? importedFile.folderId : rootFolderId;
+      const record: DriveFileRecord = {
+        id: importedFile.id,
+        userId: user.id,
+        folderId,
+        messageId: importedFile.messageId,
+        name: importedFile.name,
+        mimeType: importedFile.mimeType,
+        size: importedFile.size,
+        createdAt: importedFile.createdAt,
+        updatedAt: importedFile.createdAt
+      };
+
+      nextStore.files[record.id] = record;
+    }
+  });
+}
+
+async function ensureImportedFiles(user: UserAccount) {
+  try {
+    await importGramDriveFilesFromTelegram(user);
+  } catch {
+    // Import is opportunistic. Normal API errors should not block authenticated requests.
+  }
 }
 
 async function persistSignedInUser(
@@ -247,7 +444,7 @@ async function persistSignedInUser(
       (user) => user.telegramUserId === profile.telegramUserId
     );
 
-    const userId = existing?.id ?? crypto.randomUUID();
+    const userId = existing?.id ?? profile.telegramUserId;
     const user: UserAccount = {
       id: userId,
       phone,
@@ -275,7 +472,7 @@ async function persistSignedInUser(
       expiresAt: new Date(Date.now() + sessionDurationMs).toISOString()
     };
 
-    return { token, user: publicUser(user) };
+    return { token, user: publicUser(user), account: user };
   });
 }
 
@@ -315,21 +512,23 @@ app.post("/api/auth/send-code", async (req, res) => {
     const code = await requestLoginCode(phone, credentials);
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const attempt: LoginAttempt = {
+      id,
+      phone,
+      apiId: credentials.apiId,
+      encryptedApiHash: encryptText(credentials.apiHash, config.appSecret),
+      phoneCodeHash: code.phoneCodeHash,
+      tempSession: code.tempSession,
+      requiresPassword: false,
+      createdAt: now,
+      expiresAt: new Date(Date.now() + loginDurationMs).toISOString()
+    };
 
     await mutateStore((store) => {
-      store.loginAttempts[id] = {
-        id,
-        phone,
-        apiId: credentials.apiId,
-        encryptedApiHash: encryptText(credentials.apiHash, config.appSecret),
-        phoneCodeHash: code.phoneCodeHash,
-        tempSession: code.tempSession,
-        requiresPassword: false,
-        createdAt: now,
-        expiresAt: new Date(Date.now() + loginDurationMs).toISOString()
-      };
+      store.loginAttempts[id] = attempt;
     });
 
+    setLoginAttemptCookie(res, attempt);
     res.json({
       loginId: id,
       timeout: code.timeout
@@ -342,8 +541,7 @@ app.post("/api/auth/send-code", async (req, res) => {
 app.post("/api/auth/verify-code", async (req, res) => {
   const loginId = String(req.body?.loginId ?? "");
   const code = String(req.body?.code ?? "").replace(/\D/g, "");
-  const store = await readStore();
-  const attempt = store.loginAttempts[loginId];
+  const attempt = await getLoginAttempt(req, loginId);
 
   if (!attempt) {
     return jsonError(res, 400, "This login attempt expired. Request a new code.");
@@ -363,6 +561,12 @@ app.post("/api/auth/verify-code", async (req, res) => {
     );
 
     if (result.status === "password_required") {
+      const nextAttempt: LoginAttempt = {
+        ...attempt,
+        requiresPassword: true,
+        tempSession: result.tempSession
+      };
+
       await mutateStore((nextStore) => {
         if (nextStore.loginAttempts[loginId]) {
           nextStore.loginAttempts[loginId].requiresPassword = true;
@@ -370,6 +574,7 @@ app.post("/api/auth/verify-code", async (req, res) => {
         }
       });
 
+      setLoginAttemptCookie(res, nextAttempt);
       res.json({ requiresPassword: true });
       return;
     }
@@ -385,7 +590,8 @@ app.post("/api/auth/verify-code", async (req, res) => {
       delete nextStore.loginAttempts[loginId];
     });
 
-    setLoginCookie(res, signedIn.token);
+    clearLoginAttemptCookie(res);
+    setLoginCookie(res, signedIn.account);
     res.json({ user: signedIn.user });
   } catch (error) {
     jsonError(res, 400, toTelegramError(error));
@@ -395,8 +601,7 @@ app.post("/api/auth/verify-code", async (req, res) => {
 app.post("/api/auth/verify-password", async (req, res) => {
   const loginId = String(req.body?.loginId ?? "");
   const password = String(req.body?.password ?? "");
-  const store = await readStore();
-  const attempt = store.loginAttempts[loginId];
+  const attempt = await getLoginAttempt(req, loginId);
 
   if (!attempt || !attempt.requiresPassword) {
     return jsonError(res, 400, "This password check expired. Request a new code.");
@@ -420,7 +625,8 @@ app.post("/api/auth/verify-password", async (req, res) => {
       delete nextStore.loginAttempts[loginId];
     });
 
-    setLoginCookie(res, signedIn.token);
+    clearLoginAttemptCookie(res);
+    setLoginCookie(res, signedIn.account);
     res.json({ user: signedIn.user });
   } catch (error) {
     jsonError(res, 400, toTelegramError(error));
@@ -577,6 +783,8 @@ app.get("/api/files", async (req, res) => {
   const session = await requireUser(req, res);
   if (!session) return;
 
+  await ensureImportedFiles(session.user);
+
   const folderId = String(req.query.folderId ?? rootFolderId);
   const search = String(req.query.search ?? "").toLowerCase();
   const view = String(req.query.view ?? "folder");
@@ -621,6 +829,8 @@ app.get("/api/files", async (req, res) => {
 app.get("/api/files/summary", async (req, res) => {
   const session = await requireUser(req, res);
   if (!session) return;
+
+  await ensureImportedFiles(session.user);
 
   const store = await readStore();
   const files = Object.values(store.files).filter(

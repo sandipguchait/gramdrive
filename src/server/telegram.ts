@@ -16,6 +16,26 @@ type PasswordRequired = {
   tempSession: string;
 };
 
+export type ImportedGramDriveFile = {
+  id: string;
+  folderId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  createdAt: string;
+  messageId: number;
+};
+
+type GramDriveCaptionMetadata = {
+  app?: string;
+  id?: string;
+  folderId?: string;
+  name?: string;
+  size?: number;
+  mimeType?: string;
+  uploadedAt?: string;
+};
+
 function getSessionValue(client: TelegramClient) {
   return (client.session as unknown as { save: () => string }).save();
 }
@@ -219,4 +239,67 @@ export async function withUserClient<T>(
   } finally {
     await client.disconnect();
   }
+}
+
+function parseGramDriveCaption(messageText: string, messageId: number): ImportedGramDriveFile | null {
+  const marker = "GramDrive\n";
+
+  if (!messageText.startsWith(marker)) {
+    return null;
+  }
+
+  try {
+    const metadata = JSON.parse(
+      messageText.slice(marker.length).trim()
+    ) as GramDriveCaptionMetadata;
+
+    if (
+      metadata.app !== "GramDrive" ||
+      !metadata.id ||
+      !metadata.name ||
+      typeof metadata.size !== "number"
+    ) {
+      return null;
+    }
+
+    return {
+      id: metadata.id,
+      folderId: metadata.folderId || "root",
+      name: metadata.name,
+      mimeType: metadata.mimeType || "application/octet-stream",
+      size: metadata.size,
+      createdAt: metadata.uploadedAt || new Date().toISOString(),
+      messageId
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function findGramDriveFiles(user: UserAccount, limit = 500) {
+  return withUserClient(user, async (client) => {
+    const files: ImportedGramDriveFile[] = [];
+
+    for await (const rawMessage of client.iterMessages("me", {
+      search: "GramDrive",
+      limit
+    })) {
+      const message = rawMessage as {
+        id?: number | { toString: () => string };
+        message?: string;
+      };
+      const messageId = Number(message.id);
+
+      if (!Number.isFinite(messageId) || !message.message) {
+        continue;
+      }
+
+      const importedFile = parseGramDriveCaption(message.message, messageId);
+      if (importedFile) {
+        files.push(importedFile);
+      }
+    }
+
+    return files;
+  });
 }
