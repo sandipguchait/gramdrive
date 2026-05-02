@@ -22,6 +22,23 @@ Avoid static-only hosts for the full app:
 - Netlify static only
 - Vercel static only
 
+### Vercel
+
+The repo includes `vercel.json` and an `api/index.ts` entry so Vercel can serve the
+React app from `dist/client` and forward `/api/*` requests to the Node backend.
+
+Set these Vercel environment variables before deploying:
+
+```bash
+APP_SECRET=replace_with_a_32_plus_character_random_secret
+MAX_UPLOAD_MB=100
+```
+
+Vercel serverless storage is temporary. The app will boot on Vercel, but metadata stored in
+`DATA_DIR` can disappear between deployments or cold starts unless you move the store to a
+database or persistent storage service. For production users, prefer a persistent Node host or
+replace the JSON store with Postgres/SQLite on durable storage.
+
 ## Telegram API Credentials
 
 Users paste their own Telegram API credentials on the login screen. The screen includes a short guide and a link to [my.telegram.org/apps](https://my.telegram.org/apps).

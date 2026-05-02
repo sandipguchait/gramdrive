@@ -40,11 +40,23 @@ function readApiId() {
   return apiId;
 }
 
+function readDataDir() {
+  if (process.env.DATA_DIR) {
+    return path.resolve(process.cwd(), process.env.DATA_DIR);
+  }
+
+  if (process.env.VERCEL) {
+    return path.join("/tmp", "gramdrive-data");
+  }
+
+  return path.resolve(process.cwd(), "data");
+}
+
 export const config: AppConfig = {
   apiId: readApiId(),
   apiHash: process.env.TELEGRAM_API_HASH,
   appSecret: readAppSecret(),
-  dataDir: path.resolve(process.cwd(), process.env.DATA_DIR ?? "data"),
+  dataDir: readDataDir(),
   maxUploadMb: Number(process.env.MAX_UPLOAD_MB ?? 100),
   port: Number(process.env.PORT ?? 4173),
   isProduction

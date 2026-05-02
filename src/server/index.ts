@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import express, { type Request, type Response } from "express";
 import multer from "multer";
 import { config, hasTelegramConfig } from "./config.js";
@@ -24,7 +23,7 @@ import type {
   UserAccount
 } from "./types.js";
 
-const app = express();
+export const app = express();
 const sessionCookie = "tdrive_session";
 const oneDayMs = 24 * 60 * 60 * 1000;
 const sessionDurationMs = 30 * oneDayMs;
@@ -1000,26 +999,30 @@ app.delete("/api/files/:id/permanent", async (req, res) => {
   }
 });
 
-if (config.isProduction) {
-  const clientPath = path.resolve(process.cwd(), "dist/client");
-  app.use(express.static(clientPath));
-  app.get(/.*/, (_req, res) => {
-    res.sendFile(path.join(clientPath, "index.html"));
-  });
-} else {
-  const { createServer } = await import("vite");
-  const vite = await createServer({
-    server: { middlewareMode: true },
-    appType: "spa"
+if (!process.env.VERCEL) {
+  if (config.isProduction) {
+    const clientPath = path.resolve(process.cwd(), "dist/client");
+    app.use(express.static(clientPath));
+    app.get(/.*/, (_req, res) => {
+      res.sendFile(path.join(clientPath, "index.html"));
+    });
+  } else {
+    const { createServer } = await import("vite");
+    const vite = await createServer({
+      server: { middlewareMode: true },
+      appType: "spa"
+    });
+
+    app.use(vite.middlewares);
+  }
+
+  const server = app.listen(config.port, () => {
+    console.log(`GramDrive is running at http://localhost:${config.port}`);
   });
 
-  app.use(vite.middlewares);
+  process.on("SIGTERM", () => {
+    server.close();
+  });
 }
 
-const server = app.listen(config.port, () => {
-  console.log(`GramDrive is running at http://localhost:${config.port}`);
-});
-
-process.on("SIGTERM", () => {
-  server.close();
-});
+export default app;
