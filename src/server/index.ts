@@ -28,6 +28,8 @@ import type {
 export const app = express();
 const sessionCookie = "tdrive_session";
 const loginAttemptCookie = "tdrive_login_attempt";
+const maxCookieChunkLength = 2800;
+const maxCookieChunks = 12;
 const oneDayMs = 24 * 60 * 60 * 1000;
 const sessionDurationMs = 30 * oneDayMs;
 const loginDurationMs = 10 * 60 * 1000;
@@ -80,6 +82,10 @@ function parseCookies(req: Request) {
   return cookies;
 }
 
+function cookieChunkName(name: string, index: number) {
+  return `${name}.${index}`;
+}
+
 function appendSetCookie(res: Response, cookie: string) {
   const current = res.getHeader("Set-Cookie");
 
@@ -104,6 +110,49 @@ function clearCookieString(name: string) {
   const secure = config.isProduction ? "; Secure" : "";
 
   return `${name}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secure}`;
+}
+
+function setChunkedCookie(res: Response, name: string, value: string, maxAgeSeconds: number) {
+  appendSetCookie(res, clearCookieString(name));
+
+  for (let index = 0; index < maxCookieChunks; index += 1) {
+    appendSetCookie(res, clearCookieString(cookieChunkName(name, index)));
+  }
+
+  const chunks = value.match(new RegExp(`.{1,${maxCookieChunkLength}}`, "g")) ?? [""];
+
+  for (const [index, chunk] of chunks.entries()) {
+    appendSetCookie(res, cookieString(cookieChunkName(name, index), chunk, maxAgeSeconds));
+  }
+}
+
+function clearChunkedCookie(res: Response, name: string) {
+  appendSetCookie(res, clearCookieString(name));
+
+  for (let index = 0; index < maxCookieChunks; index += 1) {
+    appendSetCookie(res, clearCookieString(cookieChunkName(name, index)));
+  }
+}
+
+function readChunkedCookie(cookies: Map<string, string>, name: string) {
+  const directCookie = cookies.get(name);
+  if (directCookie) {
+    return directCookie;
+  }
+
+  const chunks: string[] = [];
+
+  for (let index = 0; index < maxCookieChunks; index += 1) {
+    const chunk = cookies.get(cookieChunkName(name, index));
+
+    if (!chunk) {
+      break;
+    }
+
+    chunks.push(chunk);
+  }
+
+  return chunks.length ? chunks.join("") : undefined;
 }
 
 function encodeCookiePayload(value: unknown) {
@@ -133,33 +182,29 @@ function setLoginCookie(res: Response, user: UserAccount) {
     expiresAt: new Date(Date.now() + sessionDurationMs).toISOString()
   };
 
-  appendSetCookie(
+  setChunkedCookie(
     res,
-    cookieString(
-      sessionCookie,
-      encodeCookiePayload(payload),
-      Math.floor(sessionDurationMs / 1000)
-    )
+    sessionCookie,
+    encodeCookiePayload(payload),
+    Math.floor(sessionDurationMs / 1000)
   );
 }
 
 function setLoginAttemptCookie(res: Response, attempt: LoginAttempt) {
-  appendSetCookie(
+  setChunkedCookie(
     res,
-    cookieString(
-      loginAttemptCookie,
-      encodeCookiePayload(attempt),
-      Math.floor(loginDurationMs / 1000)
-    )
+    loginAttemptCookie,
+    encodeCookiePayload(attempt),
+    Math.floor(loginDurationMs / 1000)
   );
 }
 
 function clearLoginCookie(res: Response) {
-  appendSetCookie(res, clearCookieString(sessionCookie));
+  clearChunkedCookie(res, sessionCookie);
 }
 
 function clearLoginAttemptCookie(res: Response) {
-  appendSetCookie(res, clearCookieString(loginAttemptCookie));
+  clearChunkedCookie(res, loginAttemptCookie);
 }
 
 function publicUser(user: UserAccount): PublicUser {
@@ -272,7 +317,8 @@ function sortFiles(files: DriveFileRecord[], sort: string, direction: string) {
 }
 
 async function getRequestSession(req: Request) {
-  const token = parseCookies(req).get(sessionCookie);
+  const cookies = parseCookies(req);
+  const token = readChunkedCookie(cookies, sessionCookie);
 
   if (!token) {
     return null;
@@ -309,8 +355,14 @@ async function getRequestSession(req: Request) {
     // Older deployments used opaque store-backed session tokens. Fall through to that lookup.
   }
 
+  const opaqueToken = cookies.get(sessionCookie);
+
+  if (!opaqueToken) {
+    return null;
+  }
+
   const store = await readStore();
-  const webSession = store.webSessions[token];
+  const webSession = store.webSessions[opaqueToken];
 
   if (!webSession || new Date(webSession.expiresAt).getTime() <= Date.now()) {
     return null;
@@ -321,7 +373,7 @@ async function getRequestSession(req: Request) {
     return null;
   }
 
-  return { token, user };
+  return { token: opaqueToken, user };
 }
 
 async function requireUser(req: Request, res: Response) {
@@ -344,7 +396,7 @@ async function getLoginAttempt(req: Request, loginId: string) {
     return storeAttempt;
   }
 
-  const cookieValue = parseCookies(req).get(loginAttemptCookie);
+  const cookieValue = readChunkedCookie(parseCookies(req), loginAttemptCookie);
   if (!cookieValue) {
     return null;
   }
