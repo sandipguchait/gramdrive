@@ -1,0 +1,32 @@
+{
+  "name": "telegram-cloud-drive",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server/index.ts",
+    "build": "vite build && tsc -p tsconfig.server.json",
+    "start": "NODE_ENV=production node dist/server/index.js",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "lucide-react": "^0.552.0",
+    "multer": "^2.0.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "telegram": "^2.26.22",
+    "vite": "^7.2.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
